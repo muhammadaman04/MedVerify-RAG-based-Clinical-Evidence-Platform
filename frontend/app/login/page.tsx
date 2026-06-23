@@ -8,17 +8,12 @@ import api from "@/lib/api";
 
 const Logo = () => (
   <div className="flex items-center gap-2 justify-center mb-8">
-    <div
-      className="w-10 h-10 rounded-xl flex items-center justify-center"
-      style={{ background: "linear-gradient(135deg, #0ea5e9, #0284c7)", boxShadow: "0 0 24px rgba(14,165,233,0.4)" }}
-    >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={2.5}>
+    <div className="w-8 h-8 rounded-md bg-blue-600 flex items-center justify-center">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={2.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
       </svg>
     </div>
-    <span className="font-bold text-xl" style={{ color: "var(--text-primary)" }}>
-      Med<span className="gradient-text">Verify</span>
-    </span>
+    <span className="font-bold text-xl text-slate-900">MedVerify</span>
   </div>
 );
 
@@ -54,16 +49,13 @@ export default function LoginPage() {
     setError("");
     try {
       const res = await api.post("/auth/login", { email: email.toLowerCase(), password });
-      const { access_token, user } = res.data;
-      login(access_token, user);
-      // Role-based redirect
-      if (user.role === "admin") {
+      login(res.data.access_token, res.data.user);
+      if (res.data.user.role === "admin") {
         router.push("/admin/dashboard");
       } else {
         router.push("/chat");
       }
     } catch {
-      // Generic message — never reveal which field was wrong
       setError("Incorrect email or password.");
     } finally {
       setLoading(false);
@@ -71,128 +63,73 @@ export default function LoginPage() {
   };
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center px-4 py-12"
-      style={{ background: "var(--background)" }}
-    >
-      <div className="hero-glow fixed inset-0 pointer-events-none" />
-      <div className="w-full max-w-md relative z-10">
-        <Link href="/" className="block">
-          <Logo />
-        </Link>
+    <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+        <Link href="/" className="block"><Logo /></Link>
+        <h2 className="text-center text-2xl font-bold tracking-tight text-slate-900">
+          Sign in to your account
+        </h2>
+        <p className="mt-2 text-center text-sm text-slate-600">
+          Or{" "}
+          <Link href="/signup" className="font-medium text-blue-600 hover:text-blue-500">
+            create a new admin account
+          </Link>
+        </p>
+      </div>
 
-        <div className="glass rounded-2xl p-8" style={{ boxShadow: "0 24px 80px rgba(14,165,233,0.1)" }}>
-          <h1
-            className="text-2xl font-bold mb-1 text-center"
-            style={{ color: "var(--text-primary)" }}
-          >
-            Welcome back
-          </h1>
-          <p className="text-sm text-center mb-7" style={{ color: "var(--text-muted)" }}>
-            Log in to your MedVerify account
-          </p>
-
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="bg-white py-8 px-4 shadow-sm border border-slate-200 sm:rounded-xl sm:px-10">
           {error && (
-            <div
-              className="mb-5 p-3 rounded-lg text-sm flex items-center gap-2"
-              style={{
-                background: "var(--danger-dim)",
-                color: "var(--danger)",
-                border: "1px solid rgba(239,68,68,0.2)",
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="12" />
-                <line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
-              {error}
+            <div className="mb-6 rounded-md bg-red-50 p-4 border border-red-100">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-red-800">{error}</h3>
+                </div>
+              </div>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5" noValidate>
-            {/* Email */}
+          <form className="space-y-5" onSubmit={handleSubmit} noValidate>
             <div>
-              <label
-                htmlFor="email"
-                className="block text-sm font-medium mb-1.5"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                Email
-              </label>
+              <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1.5">Email address</label>
               <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                placeholder="you@hospital.com"
-                autoComplete="email"
-                className="input-field"
+                id="email" type="email" value={email} onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                className="input-field" autoComplete="email"
               />
             </div>
 
-            {/* Password */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label
-                  htmlFor="password"
-                  className="block text-sm font-medium"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  Password
-                </label>
-                <a href="#" className="text-xs" style={{ color: "var(--primary)" }}>
-                  Forgot password?
-                </a>
+                <label htmlFor="password" className="block text-sm font-medium text-slate-700">Password</label>
+                <div className="text-sm">
+                  <a href="#" className="font-medium text-blue-600 hover:text-blue-500">Forgot password?</a>
+                </div>
               </div>
               <div className="relative">
                 <input
-                  id="password"
-                  type={showPw ? "text" : "password"}
-                  value={password}
+                  id="password" type={showPw ? "text" : "password"} value={password}
                   onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                  placeholder="Your password"
-                  autoComplete="current-password"
-                  className="input-field"
-                  style={{ paddingRight: "2.75rem" }}
+                  className="input-field" style={{ paddingRight: "2.75rem" }} autoComplete="current-password"
                 />
                 <button
-                  type="button"
-                  onClick={() => setShowPw((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2"
-                  style={{ color: "var(--text-muted)" }}
+                  type="button" onClick={() => setShowPw(!showPw)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 >
                   <EyeIcon show={showPw} />
                 </button>
               </div>
             </div>
 
-            <button
-              type="submit"
-              className="btn-primary mt-2"
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeOpacity={0.25} />
-                    <path d="M3 12a9 9 0 019-9" />
-                  </svg>
-                  Logging in…
-                </>
-              ) : (
-                "Log in"
-              )}
+            <button type="submit" className="btn-primary w-full mt-2" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
         </div>
-
-        <p className="text-center mt-5 text-sm" style={{ color: "var(--text-muted)" }}>
-          Don&apos;t have an account?{" "}
-          <Link href="/signup" style={{ color: "var(--primary)" }}>
-            Create admin account
-          </Link>
-        </p>
       </div>
     </div>
   );

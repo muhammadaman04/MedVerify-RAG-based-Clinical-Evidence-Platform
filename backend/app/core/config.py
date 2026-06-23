@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     jwt_access_token_expire_hours: int = 8
     app_env: str = "development"
     allowed_origins: str = "http://localhost:3000"
+    resend_api_key: str = ""
+    resend_from_email: str = "onboarding@resend.dev"
+    frontend_url: str = "http://localhost:3000"
 
     class Config:
         env_file = ".env"

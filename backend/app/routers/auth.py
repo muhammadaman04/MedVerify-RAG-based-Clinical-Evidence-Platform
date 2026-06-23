@@ -206,6 +206,142 @@ async def login(body: LoginRequest, response: Response):
         },
     )
 
+# ---------------------------------------------------------------------------
+# GET /auth/accept-invite  — Validate invite token, return email
+# ---------------------------------------------------------------------------
+
+class AcceptInviteResponse(BaseModel):
+    email: str
+    name: str
+
+
+@router.get("/accept-invite", response_model=AcceptInviteResponse)
+async def accept_invite(token: str):
+    """
+    Public endpoint. Validates an invite token.
+    Returns the associated email so the frontend can display
+    "You are setting up your account for dr.james@hospital.com."
+    """
+    if not token or not token.strip():
+        raise HTTPException(status_code=400, detail="Token is required.")
+
+    db = get_supabase()
+    result = (
+        db.table("users")
+        .select("id, email, name, status, invite_token, invite_expires_at")
+        .eq("invite_token", token.strip())
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Invalid or expired invite link.")
+
+    user = result.data[0]
+
+    # Guard: account already activated
+    if user["status"] != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="This invite has already been used. Please log in instead."
+        )
+
+    # Guard: token expired
+    if user["invite_expires_at"]:
+        expires = datetime.fromisoformat(user["invite_expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires:
+            raise HTTPException(
+                status_code=410,
+                detail="This invite link has expired. Please ask your admin to send a new invite."
+            )
+
+    return AcceptInviteResponse(
+        email=user["email"],
+        name=user["name"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/set-password  — Activate account with password
+# ---------------------------------------------------------------------------
+
+class SetPasswordRequest(BaseModel):
+    token: str
+    password: str
+    name: str = ""  # Optional — let the user update their name during setup
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number")
+        return v
+
+
+class SetPasswordResponse(BaseModel):
+    message: str
+
+
+@router.post("/set-password", response_model=SetPasswordResponse)
+async def set_password(body: SetPasswordRequest):
+    """
+    Public endpoint. Activates a pending account.
+    - Validates the token exists, is not expired, and account is pending.
+    - Hashes the password with bcrypt (12 rounds).
+    - Sets status = 'active'.
+    - Deletes the invite token (one-time use).
+    """
+    if not body.token or not body.token.strip():
+        raise HTTPException(status_code=400, detail="Token is required.")
+
+    db = get_supabase()
+    result = (
+        db.table("users")
+        .select("id, email, name, status, invite_token, invite_expires_at")
+        .eq("invite_token", body.token.strip())
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Invalid or expired invite link.")
+
+    user = result.data[0]
+
+    if user["status"] != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="This invite has already been used. Please log in instead."
+        )
+
+    # Check token expiry
+    if user["invite_expires_at"]:
+        expires = datetime.fromisoformat(user["invite_expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires:
+            raise HTTPException(
+                status_code=410,
+                detail="This invite link has expired. Please ask your admin to send a new invite."
+            )
+
+    # Hash password and activate
+    password_hash = hash_password(body.password)
+    update_data: dict = {
+        "password_hash": password_hash,
+        "status": "active",
+        "invite_token": None,      # Delete token — one-time use
+        "invite_expires_at": None,
+    }
+
+    # Update name if the user provided one
+    if body.name and body.name.strip():
+        update_data["name"] = body.name.strip()
+
+    db.table("users").update(update_data).eq("id", user["id"]).execute()
+
+    return SetPasswordResponse(
+        message="Account activated. You can now log in."
+    )
+
 
 # ---------------------------------------------------------------------------
 # GET /health  — Uptime check
