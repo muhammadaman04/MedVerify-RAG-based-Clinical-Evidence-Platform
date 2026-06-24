@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
@@ -81,8 +82,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const { user, logout, isAuthenticated } = useAuthStore();
 
   // Auth guard — redirect to login if not authenticated
+  useEffect(() => {
+    if (!isAuthenticated) {
+      router.push("/login");
+    }
+  }, [isAuthenticated, router]);
+
   if (!isAuthenticated) {
-    router.push("/login");
     return null;
   }
 

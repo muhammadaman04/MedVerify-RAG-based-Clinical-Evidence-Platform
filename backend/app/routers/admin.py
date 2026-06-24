@@ -1,110 +1,69 @@
 """
-Admin-only routes: invite users, list users, manage users.
-All endpoints require require_admin() dependency.
+Admin router — thin controller layer.
+All business logic and DB calls live in app.services.*
 """
-
+import threading
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
-from app.core.config import get_settings
-from app.core.database import get_supabase
 from app.core.deps import require_admin
+from app.core.database import get_supabase
+from app.schemas.user import InviteRequest, InviteResponse, UpdateUserRequest
+from app.schemas.document import DocumentUploadResponse, DocumentStatusResponse, DocumentListItem
+from app.services.user_service import (
+    get_user_by_email,
+    create_invite,
+    refresh_invite_token,
+    list_all_users,
+    update_user_by_id,
+)
+from app.services.email_service import send_invite_email
+from app.services.storage_service import upload_file
+from app.services.document_service import process_document
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-settings = get_settings()
 
 
 # ---------------------------------------------------------------------------
-# Request / response schemas
-# ---------------------------------------------------------------------------
-
-class InviteRequest(BaseModel):
-    email: EmailStr
-    role: str = "clinician"  # 'clinician' or 'admin'
-
-
-class InviteResponse(BaseModel):
-    message: str
-    user_id: str
-    email: str
-    invite_link: str
-
-
-class UserOut(BaseModel):
-    id: str
-    email: str
-    name: str
-    role: str
-    status: str
-    created_at: str
-
-
-# ---------------------------------------------------------------------------
-# POST /admin/invite  — Send invite email to a new user
+# POST /admin/invite  — Send invite email to a new team member
 # ---------------------------------------------------------------------------
 
 @router.post("/invite", response_model=InviteResponse, status_code=201)
 async def invite_user(body: InviteRequest, admin: dict = Depends(require_admin)):
     """
-    Admin-only. Creates a pending user and sends an invite email via Resend.
-    - Generates a UUID invite token (48-hour expiry).
-    - Sends the invite email with a link to /accept-invite?token=xyz.
+    Admin-only. Creates a pending user and sends an invite email.
+    If the user already exists as pending, regenerates the token and resends.
     """
-    # Validate role
     if body.role not in ("clinician", "admin"):
         raise HTTPException(status_code=422, detail="Role must be 'clinician' or 'admin'.")
 
-    db = get_supabase()
+    existing = get_user_by_email(body.email)
 
-    # Check if email already exists
-    existing = (
-        db.table("users")
-        .select("id, status")
-        .eq("email", body.email.lower())
-        .execute()
-    )
-    if existing.data:
-        existing_user = existing.data[0]
-        if existing_user["status"] == "active":
+    if existing:
+        if existing["status"] == "active":
             raise HTTPException(
                 status_code=409,
                 detail="A user with this email already exists and is active."
             )
-        # If pending, allow re-invite (regenerate token)
-        if existing_user["status"] == "pending":
-            return await _resend_invite(existing_user["id"], body.email.lower(), admin)
+        # Re-invite a pending user: regenerate token and resend
+        if existing["status"] == "pending":
+            invite_link = refresh_invite_token(existing["id"])
+            send_invite_email(body.email.lower(), invite_link, admin.get("name", "Admin"))
+            return InviteResponse(
+                message="Invite re-sent successfully.",
+                user_id=existing["id"],
+                email=body.email.lower(),
+                invite_link=invite_link,
+            )
 
-    # Generate invite token
-    invite_token = str(uuid.uuid4())
-    invite_expires_at = datetime.now(timezone.utc) + timedelta(hours=48)
-
-    # Create user record with status='pending'
-    insert_result = (
-        db.table("users")
-        .insert({
-            "email": body.email.lower(),
-            "name": body.email.split("@")[0],  # Placeholder — set by user on accept
-            "role": body.role,
-            "status": "pending",
-            "invited_by": admin["sub"],  # admin's user_id from JWT
-            "invite_token": invite_token,
-            "invite_expires_at": invite_expires_at.isoformat(),
-            "password_hash": None,
-        })
-        .execute()
+    user, invite_link = create_invite(
+        email=body.email,
+        role=body.role,
+        invited_by_id=admin["sub"],
     )
-
-    if not insert_result.data:
-        raise HTTPException(status_code=500, detail="Failed to create invite. Please try again.")
-
-    user = insert_result.data[0]
-    invite_link = f"{settings.frontend_url}/accept-invite?token={invite_token}"
-
-    # Send invite email
-    await _send_invite_email(body.email.lower(), invite_link, admin.get("name", "Admin"))
+    send_invite_email(body.email.lower(), invite_link, admin.get("name", "Admin"))
 
     return InviteResponse(
         message="Invite sent successfully.",
@@ -114,135 +73,198 @@ async def invite_user(body: InviteRequest, admin: dict = Depends(require_admin))
     )
 
 
-async def _resend_invite(user_id: str, email: str, admin: dict) -> InviteResponse:
-    """Re-generate token for an existing pending user and resend the email."""
-    db = get_supabase()
-
-    invite_token = str(uuid.uuid4())
-    invite_expires_at = datetime.now(timezone.utc) + timedelta(hours=48)
-
-    db.table("users").update({
-        "invite_token": invite_token,
-        "invite_expires_at": invite_expires_at.isoformat(),
-    }).eq("id", user_id).execute()
-
-    invite_link = f"{settings.frontend_url}/accept-invite?token={invite_token}"
-    await _send_invite_email(email, invite_link, admin.get("name", "Admin"))
-
-    return InviteResponse(
-        message="Invite re-sent successfully.",
-        user_id=user_id,
-        email=email,
-        invite_link=invite_link,
-    )
-
-
-async def _send_invite_email(to_email: str, invite_link: str, inviter_name: str):
-    """
-    Send the invite email via the Resend API.
-    If the Resend API key is not configured, log instead of failing.
-    """
-    if not settings.resend_api_key:
-        # Dev mode — just print the link
-        print(f"\n{'='*60}")
-        print(f"  INVITE EMAIL (Resend not configured)")
-        print(f"  To: {to_email}")
-        print(f"  Link: {invite_link}")
-        print(f"{'='*60}\n")
-        return
-
-    try:
-        import resend
-        resend.api_key = settings.resend_api_key.strip()
-
-        # resend Python SDK v2.x uses lowercase .emails.send()
-        resend.Emails.send({
-            "from": settings.resend_from_email,
-            "to": [to_email],
-            "subject": f"{inviter_name} invited you to MedVerify",
-            "html": f"""
-            <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-                <div style="margin-bottom: 24px;">
-                    <strong style="font-size: 18px; color: #0f172a;">MedVerify</strong>
-                </div>
-                <p style="color: #334155; font-size: 15px; line-height: 1.6;">
-                    <strong>{inviter_name}</strong> has invited you to join MedVerify — an AI-powered clinical evidence platform.
-                </p>
-                <p style="color: #334155; font-size: 15px; line-height: 1.6;">
-                    Click the button below to set your password and activate your account. This link expires in 48 hours.
-                </p>
-                <div style="margin: 28px 0;">
-                    <a href="{invite_link}"
-                       style="display: inline-block; padding: 12px 28px; background: #0f172a; color: #ffffff;
-                              text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">
-                        Accept Invite
-                    </a>
-                </div>
-                <p style="color: #94a3b8; font-size: 13px;">
-                    If the button doesn't work, copy and paste this URL into your browser:<br/>
-                    <a href="{invite_link}" style="color: #2563eb; word-break: break-all;">{invite_link}</a>
-                </p>
-            </div>
-            """,
-        })
-        print(f"✓ Invite email sent to {to_email}")
-    except Exception as e:
-        # Don't crash the invite flow if email fails — the link is still returned in the response
-        print(f"✗ Failed to send invite email to {to_email}: {e}")
-
-
-
 # ---------------------------------------------------------------------------
 # GET /admin/users  — List all users
 # ---------------------------------------------------------------------------
 
 @router.get("/users")
-async def list_users(admin: dict = Depends(require_admin)):
-    """List all users with their role and status."""
-    db = get_supabase()
-    result = (
-        db.table("users")
-        .select("id, email, name, role, status, created_at, last_active_at")
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return {"users": result.data}
+async def get_users(admin: dict = Depends(require_admin)):
+    """List all users ordered by creation date."""
+    users = list_all_users()
+    return {"users": users}
 
 
 # ---------------------------------------------------------------------------
-# PATCH /admin/users/:id  — Update user role or deactivate
+# PATCH /admin/users/:id  — Update role or status
 # ---------------------------------------------------------------------------
-
-class UpdateUserRequest(BaseModel):
-    role: str | None = None
-    status: str | None = None
-
 
 @router.patch("/users/{user_id}")
-async def update_user(user_id: str, body: UpdateUserRequest, admin: dict = Depends(require_admin)):
-    """Change a user's role or deactivate them."""
-    db = get_supabase()
+async def patch_user(
+    user_id: str,
+    body: UpdateUserRequest,
+    admin: dict = Depends(require_admin)
+):
+    """Change a user's role or deactivate/reactivate them."""
+    updates: dict = {}
 
-    updates = {}
     if body.role is not None:
         if body.role not in ("clinician", "admin"):
             raise HTTPException(status_code=422, detail="Role must be 'clinician' or 'admin'.")
         updates["role"] = body.role
+
     if body.status is not None:
         if body.status not in ("active", "deactivated"):
             raise HTTPException(status_code=422, detail="Status must be 'active' or 'deactivated'.")
+        if body.status == "deactivated" and user_id == admin["sub"]:
+            raise HTTPException(status_code=422, detail="You cannot deactivate yourself.")
         updates["status"] = body.status
 
     if not updates:
         raise HTTPException(status_code=422, detail="Nothing to update.")
 
-    # Don't let admin deactivate themselves
-    if body.status == "deactivated" and user_id == admin["sub"]:
-        raise HTTPException(status_code=422, detail="You cannot deactivate yourself.")
+    updated = update_user_by_id(user_id, updates)
+    return {"message": "User updated.", "user": updated}
 
-    result = db.table("users").update(updates).eq("id", user_id).execute()
 
+# ===========================================================================
+# DOCUMENT ENDPOINTS (Phase 2)
+# ===========================================================================
+
+# Allowed MIME types — checked on the server, not just the extension
+ALLOWED_MIME_TYPES = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+}
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/documents/upload
+# ---------------------------------------------------------------------------
+
+@router.post("/documents/upload", response_model=DocumentUploadResponse, status_code=202)
+async def upload_document(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Admin-only. Accepts a PDF or DOCX multipart upload.
+    - Validates MIME type server-side.
+    - Saves the raw file to Supabase Storage.
+    - Creates a document record in Supabase (status=processing).
+    - Kicks off ingestion in a background thread.
+    - Returns the document_id immediately for frontend polling.
+    """
+    if not title or not title.strip():
+        raise HTTPException(status_code=422, detail="Title is required.")
+
+    content_type = file.content_type or ""
+    file_type = ALLOWED_MIME_TYPES.get(content_type)
+    if not file_type:
+        raise HTTPException(
+            status_code=415,
+            detail="Invalid file type. Only PDF and DOCX files are accepted."
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+
+    db = get_supabase()
+    document_id = str(uuid.uuid4())
+    safe_name = f"{document_id}_{file.filename or 'document'}"
+
+    # Upload raw file to Supabase Storage
+    try:
+        storage_path = upload_file(file_bytes, safe_name, content_type)
+        file_url = storage_path
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File storage failed: {e}")
+
+    # Create document record with status='processing'
+    insert_result = db.table("documents").insert({
+        "id": document_id,
+        "title": title.strip(),
+        "file_type": file_type,
+        "file_url": file_url,
+        "uploaded_by": admin["sub"],
+        "status": "processing",
+        "ocr_used": False,
+        "freshness_status": "fresh",
+    }).execute()
+
+    if not insert_result.data:
+        raise HTTPException(status_code=500, detail="Failed to create document record.")
+
+    # Run ingestion in a background thread so we can return immediately
+    thread = threading.Thread(
+        target=process_document,
+        args=(document_id, file_bytes, file_type, title.strip()),
+        daemon=True,
+    )
+    thread.start()
+
+    return DocumentUploadResponse(
+        message="Document uploaded. Processing started.",
+        document_id=document_id,
+        status="processing",
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/documents/:id/status  — Poll for processing progress
+# ---------------------------------------------------------------------------
+
+@router.get("/documents/{document_id}/status", response_model=DocumentStatusResponse)
+async def get_document_status(
+    document_id: str,
+    admin: dict = Depends(require_admin),
+):
+    """Returns the current processing status of a document."""
+    db = get_supabase()
+    result = (
+        db.table("documents")
+        .select("id, status, ocr_used")
+        .eq("id", document_id)
+        .execute()
+    )
     if not result.data:
-        raise HTTPException(status_code=404, detail="User not found.")
+        raise HTTPException(status_code=404, detail="Document not found.")
 
-    return {"message": "User updated.", "user": result.data[0]}
+    doc = result.data[0]
+    # Count chunks
+    chunk_count_result = (
+        db.table("document_chunks")
+        .select("id", count="exact")
+        .eq("document_id", document_id)
+        .execute()
+    )
+    chunk_count = chunk_count_result.count or 0
+
+    return DocumentStatusResponse(
+        document_id=doc["id"],
+        status=doc["status"],
+        ocr_used=doc["ocr_used"],
+        chunk_count=chunk_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/documents  — List all documents
+# ---------------------------------------------------------------------------
+
+@router.get("/documents")
+async def list_documents(admin: dict = Depends(require_admin)):
+    """Returns all documents with chunk count."""
+    db = get_supabase()
+    result = (
+        db.table("documents")
+        .select("id, title, file_type, status, ocr_used, freshness_status, created_at, last_ingested_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    documents = []
+    for doc in result.data:
+        chunk_count_result = (
+            db.table("document_chunks")
+            .select("id", count="exact")
+            .eq("document_id", doc["id"])
+            .execute()
+        )
+        documents.append({
+            **doc,
+            "chunk_count": chunk_count_result.count or 0,
+        })
+
+    return {"documents": documents}
