@@ -30,6 +30,9 @@ def ensure_bucket_exists() -> None:
         print(f"⚠️  Could not ensure storage bucket exists: {e}")
 
 
+_bucket_checked = False
+
+
 def upload_file(file_bytes: bytes, filename: str, content_type: str) -> str:
     """
     Upload a file to Supabase Storage.
@@ -37,6 +40,11 @@ def upload_file(file_bytes: bytes, filename: str, content_type: str) -> str:
 
     Path format: documents/{filename}
     """
+    global _bucket_checked
+    if not _bucket_checked:
+        ensure_bucket_exists()
+        _bucket_checked = True
+
     db = get_supabase()
     bucket = settings.supabase_storage_bucket
     storage_path = filename  # e.g. "abc123_myguideline.pdf"

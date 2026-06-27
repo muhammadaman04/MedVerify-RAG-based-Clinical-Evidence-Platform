@@ -336,6 +336,7 @@ def process_document(document_id: str, file_bytes: bytes, file_type: str, title:
       4. Upsert to Pinecone
       5. Save to Supabase document_chunks
       6. Mark document as 'ready'
+      7. Rebuild BM25 index (Phase 3)
     """
     try:
         print(f"\n{'─'*50}")
@@ -378,6 +379,14 @@ def process_document(document_id: str, file_bytes: bytes, file_type: str, title:
             "last_ingested_at": datetime.now(timezone.utc).isoformat(),
         })
         print(f"  ✓ Document '{title}' processing complete.\n{'─'*50}\n")
+
+        # Stage 7: Rebuild BM25 index so this document is immediately searchable
+        try:
+            from app.services.retrieval_service import rebuild_bm25_index
+            rebuild_bm25_index()
+        except Exception as bm25_err:
+            # Non-fatal — BM25 will be rebuilt on next startup/request
+            print(f"  ⚠️  BM25 rebuild failed (non-fatal): {bm25_err}")
 
     except Exception as e:
         print(f"  ✗ Document processing failed: {e}")

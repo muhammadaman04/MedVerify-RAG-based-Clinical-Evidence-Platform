@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Supabase Storage bucket for raw document files (Phase 2)
     supabase_storage_bucket: str = "documents"
 
+    # Groq LLM (Phase 3)
+    groq_api_key: str = ""
+
 
 
     class Config:
