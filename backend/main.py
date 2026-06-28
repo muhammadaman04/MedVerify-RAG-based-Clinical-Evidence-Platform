@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.routers import auth, admin
+from app.routers.query import router as query_router
 
 settings = get_settings()
 
@@ -65,6 +66,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(query_router)
 
 
 @app.get("/health", tags=["system"])
