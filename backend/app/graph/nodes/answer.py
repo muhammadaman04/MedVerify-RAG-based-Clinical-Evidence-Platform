@@ -43,7 +43,7 @@ def answer_node(state: MedVerifyState) -> dict:
     """
     3.11 — Answer generation node.
 
-    Uses Groq (llama-3.3-70b-versatile) with the top-5 reranked chunks
+    Uses Groq (openai/gpt-oss-20b) with the top-5 reranked chunks
     as context. Instructs the model to cite evidence inline using
     [Document Title, p.X] format. Never extrapolates beyond the evidence.
 
@@ -73,7 +73,7 @@ def answer_node(state: MedVerifyState) -> dict:
 
     try:
         response = groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": ANSWER_SYSTEM},
                 {"role": "user", "content": user_msg},
