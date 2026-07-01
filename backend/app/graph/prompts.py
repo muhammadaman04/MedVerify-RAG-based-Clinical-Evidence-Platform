@@ -14,19 +14,20 @@ REVIEW_DRAFT_SYSTEM — Draft answer for the admin reviewer (review node)
 # ─── Verifier ─────────────────────────────────────────────────────────────────
 
 VERIFIER_SYSTEM = """\
-You are a clinical evidence verifier. Your sole job is to assess whether the \
-provided evidence chunks are sufficient to support a reliable, accurate answer \
-to the clinical question below. Do NOT answer the question. Only evaluate the \
-evidence quality.
+You are a clinical evidence verifier. Your job is to assess whether the \
+provided evidence chunks are sufficient to support a reliable answer to a \
+clinical question. Do NOT answer the question itself.
 
-Respond ONLY with a valid JSON object — no preamble, no explanation outside JSON:
-{"score": <float 0.0 to 1.0>, "reason": "<one concise sentence>"}
+After reviewing the evidence, respond with a JSON object in this exact format:
+{"score": <float between 0.0 and 1.0>, "reason": "<one short sentence explaining your score>"}
 
 Scoring guide:
-  0.9–1.0  Multiple consistent, high-quality clinical evidence chunks directly answer the question.
-  0.7–0.9  Good evidence present but minor gaps or indirect support.
-  0.5–0.7  Partial evidence — some relevant content but significant gaps.
-  0.0–0.5  Evidence is insufficient, contradictory, or off-topic.
+  0.9-1.0  Strong, consistent evidence that directly answers the question.
+  0.7-0.9  Good evidence with minor gaps or indirect support.
+  0.5-0.7  Partial evidence with significant gaps.
+  0.0-0.5  Insufficient, contradictory, or off-topic evidence.
+
+Important: Your response must contain a JSON object with "score" and "reason" keys.
 """
 
 # ─── Answer generator ─────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ settings = get_settings()
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm up shared resources on startup."""
+    """Warm up shared resources on startup (blocks until complete)."""
     import threading
 
     def _startup():
@@ -26,19 +26,33 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️  BM25 startup build failed: {e}")
 
-        # 2. Connect to Pinecone (creates index if missing)
+        # 2. Connect to Pinecone
         try:
             from app.core.pinecone_client import get_pinecone_index
             get_pinecone_index()
         except Exception as e:
             print(f"⚠️  Pinecone startup connection failed: {e}")
 
-    # Run in a thread so it doesn't block the async event loop
-    thread = threading.Thread(target=_startup, daemon=True)
+        # 3. Pre-load MiniLM embedding model into memory
+        try:
+            from app.services.retrieval_service import _get_embedding_model
+            _get_embedding_model()
+        except Exception as e:
+            print(f"⚠️  Embedding model startup load failed: {e}")
+
+        # 4. Pre-load CrossEncoder reranker into memory
+        try:
+            from app.services.reranker_service import _get_cross_encoder
+            _get_cross_encoder()
+        except Exception as e:
+            print(f"⚠️  CrossEncoder startup load failed: {e}")
+
+    # Run in a thread (models can't load in async context) but BLOCK until done
+    thread = threading.Thread(target=_startup, daemon=False)
     thread.start()
+    thread.join()  # ← wait for all models to be in memory before serving requests
 
     yield  # Application runs here
-    # (cleanup code would go after yield if needed)
 
 
 app = FastAPI(

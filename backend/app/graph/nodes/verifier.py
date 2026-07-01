@@ -87,11 +87,35 @@ def verifier_node(state: MedVerifyState) -> dict:
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.0,
-            max_tokens=120,
-            response_format={"type": "json_object"},
+            max_tokens=256,
+            # NOTE: response_format JSON mode is not supported by all Groq models;
+            # we parse JSON manually from the text instead.
         )
-        raw = response.choices[0].message.content.strip()
-        parsed = json.loads(raw)
+        raw = (response.choices[0].message.content or "").strip()
+
+        # Guard: empty response from model
+        if not raw:
+            print("[Verifier] Model returned empty response — defaulting to 0.6 (review route).")
+            return {
+                "confidence_score": 0.6,
+                "verifier_reason": "Verifier produced no output; defaulting to human review.",
+            }
+
+        # Try direct parse first, then regex extraction as fallback
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            import re as _re
+            match = _re.search(r'\{.*?\}', raw, _re.DOTALL)
+            if match:
+                parsed = json.loads(match.group())
+            else:
+                print(f"[Verifier] Unparseable response: {raw[:200]!r} — defaulting to 0.6")
+                return {
+                    "confidence_score": 0.6,
+                    "verifier_reason": "Verifier response could not be parsed; defaulting to human review.",
+                }
+
         score = float(parsed.get("score", 0.0))
         reason = str(parsed.get("reason", "No reason provided."))
         score = max(0.0, min(1.0, score))

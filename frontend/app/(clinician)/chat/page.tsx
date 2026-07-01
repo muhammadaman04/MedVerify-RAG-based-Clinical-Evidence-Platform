@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, AlertCircle, CheckCircle2, ChevronRight, FileText, Loader2 } from "lucide-react";
+import { Send, AlertCircle, CheckCircle2, ChevronRight, FileText, Loader2, ShieldCheck } from "lucide-react";
 import { mockResponses } from "@/lib/mockData";
 import { useAuthStore } from "@/store/authStore";
 

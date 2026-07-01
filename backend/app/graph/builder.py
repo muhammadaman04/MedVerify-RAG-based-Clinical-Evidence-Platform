@@ -34,12 +34,12 @@ def _build_graph():
     graph = StateGraph(MedVerifyState)
 
     # ── Register nodes ────────────────────────────────────────────────────────
-    graph.add_node("retrieval", retrieval_node)
-    graph.add_node("reranker",  reranker_node)
-    graph.add_node("verifier",  verifier_node)
-    graph.add_node("answer",    answer_node)
-    graph.add_node("review",    review_queue_node)
-    graph.add_node("gap",       gap_logger_node)
+    graph.add_node("retrieval",       retrieval_node)
+    graph.add_node("reranker",         reranker_node)
+    graph.add_node("verifier",         verifier_node)
+    graph.add_node("generate_answer",  answer_node)
+    graph.add_node("review",           review_queue_node)
+    graph.add_node("gap",              gap_logger_node)
 
     # ── Linear edges ──────────────────────────────────────────────────────────
     graph.set_entry_point("retrieval")
@@ -51,16 +51,16 @@ def _build_graph():
         source="verifier",
         path=route_by_confidence,
         path_map={
-            "answer": "answer",
+            "answer": "generate_answer",
             "review": "review",
             "gap":    "gap",
         },
     )
 
     # ── Terminal edges ────────────────────────────────────────────────────────
-    graph.add_edge("answer", END)
-    graph.add_edge("review", END)
-    graph.add_edge("gap",    END)
+    graph.add_edge("generate_answer", END)
+    graph.add_edge("review",          END)
+    graph.add_edge("gap",             END)
 
     return graph.compile()
 
