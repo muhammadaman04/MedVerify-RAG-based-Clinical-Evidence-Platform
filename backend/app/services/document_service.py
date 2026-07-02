@@ -238,18 +238,18 @@ def upsert_to_pinecone(
     embedded_chunks: list[EmbeddedChunk],
     document_id: str,
     document_title: str,
+    org_id: str,
     batch_size: int = 100,
 ) -> list[str]:
     """
-    Upsert embedded chunks into Pinecone.
+    Upsert embedded chunks into Pinecone, scoped to the org's namespace.
+    Each organization gets its own Pinecone namespace (namespace=org_id)
+    so vector search is completely isolated between tenants.
     Returns the list of pinecone_vector_ids assigned.
-    Uses document_id + chunk_index as the stable vector ID
-    so re-ingestion replaces rather than duplicates.
     """
     index = get_pinecone_index()
     if index is None:
         print("⚠️  Pinecone not configured — skipping vector upsert.")
-        # Return dummy IDs so the pipeline can still save chunks to Supabase
         return [f"local_{document_id}_{c.chunk_index}" for c in embedded_chunks]
 
     vectors = []
@@ -267,15 +267,16 @@ def upsert_to_pinecone(
                 "page_number": chunk.page_number,
                 "heading_context": chunk.heading_context,
                 "chunk_index": chunk.chunk_index,
+                "organization_id": org_id,
             },
         })
 
-    # Upsert in batches of 100
+    # Upsert in batches, scoped to this org's namespace
     for i in range(0, len(vectors), batch_size):
         batch = vectors[i:i + batch_size]
-        index.upsert(vectors=batch)
+        index.upsert(vectors=batch, namespace=org_id)   # ← namespace isolation
 
-    print(f"✓ Upserted {len(vectors)} vectors to Pinecone.")
+    print(f"✓ Upserted {len(vectors)} vectors to Pinecone (namespace={org_id}).")
     return pinecone_ids
 
 
@@ -287,8 +288,9 @@ def save_chunks_to_supabase(
     document_id: str,
     embedded_chunks: list[EmbeddedChunk],
     pinecone_ids: list[str],
+    org_id: str,
 ) -> None:
-    """Insert all chunks into the document_chunks table."""
+    """Insert all chunks into the document_chunks table, scoped to org."""
     db = get_supabase()
 
     rows = []
@@ -302,6 +304,7 @@ def save_chunks_to_supabase(
             "heading_context": chunk.heading_context or None,
             "content_hash": chunk.content_hash,
             "token_count": chunk.token_count,
+            "organization_id": org_id,   # ← tenant scope
         })
 
     # Insert in batches of 200 to avoid payload limits
@@ -324,25 +327,24 @@ def _update_document_status(document_id: str, status: str, extra: dict | None = 
     db.table("documents").update(update).eq("id", document_id).execute()
 
 
-def process_document(document_id: str, file_bytes: bytes, file_type: str, title: str) -> None:
+def process_document(document_id: str, file_bytes: bytes, file_type: str, title: str, org_id: str) -> None:
     """
-    Full ingestion pipeline orchestrator.
-    Called synchronously for now (Celery will wrap this in Phase 5).
+    Full ingestion pipeline orchestrator, scoped to an organization.
+    org_id is used as the Pinecone namespace and stored on all chunk rows.
 
     Stages:
       1. Extract text (PDF or DOCX)
       2. Chunk text
       3. Embed chunks
-      4. Upsert to Pinecone
-      5. Save to Supabase document_chunks
+      4. Upsert to Pinecone (namespace = org_id)
+      5. Save to Supabase document_chunks (organization_id = org_id)
       6. Mark document as 'ready'
-      7. Rebuild BM25 index (Phase 3)
+      7. Rebuild BM25 index (org-scoped)
     """
     try:
         print(f"\n{'─'*50}")
-        print(f"  Processing document: {title} ({document_id})")
+        print(f"  Processing document: {title} ({document_id}) [org={org_id}]")
 
-        # Stage 1: Extract
         _update_document_status(document_id, "processing", {"status": "processing"})
         ocr_used = False
 
@@ -358,21 +360,15 @@ def process_document(document_id: str, file_bytes: bytes, file_type: str, title:
 
         print(f"  ✓ Extracted text from {len(pages)} pages/blocks.")
 
-        # Stage 2: Chunk
         chunks = chunk_pages(pages, document_id)
         print(f"  ✓ Created {len(chunks)} chunks.")
 
-        # Stage 3: Embed
         embedded = embed_chunks(chunks)
         print(f"  ✓ Embedded {len(embedded)} chunks.")
 
-        # Stage 4: Pinecone
-        pinecone_ids = upsert_to_pinecone(embedded, document_id, title)
+        pinecone_ids = upsert_to_pinecone(embedded, document_id, title, org_id)
+        save_chunks_to_supabase(document_id, embedded, pinecone_ids, org_id)
 
-        # Stage 5: Supabase chunks
-        save_chunks_to_supabase(document_id, embedded, pinecone_ids)
-
-        # Stage 6: Mark ready
         from datetime import datetime, timezone
         _update_document_status(document_id, "ready", {
             "ocr_used": ocr_used,
@@ -380,12 +376,11 @@ def process_document(document_id: str, file_bytes: bytes, file_type: str, title:
         })
         print(f"  ✓ Document '{title}' processing complete.\n{'─'*50}\n")
 
-        # Stage 7: Rebuild BM25 index so this document is immediately searchable
+        # Rebuild BM25 index (org-scoped — passes org_id for filtering)
         try:
             from app.services.retrieval_service import rebuild_bm25_index
-            rebuild_bm25_index()
+            rebuild_bm25_index(org_id=org_id)
         except Exception as bm25_err:
-            # Non-fatal — BM25 will be rebuilt on next startup/request
             print(f"  ⚠️  BM25 rebuild failed (non-fatal): {bm25_err}")
 
     except Exception as e:

@@ -1,6 +1,9 @@
 """
 Admin router — thin controller layer.
 All business logic and DB calls live in app.services.*
+
+Multitenancy: every endpoint extracts org_id from the JWT (admin["org_id"])
+and filters every DB query by it, so admins only ever see their own org's data.
 """
 import threading
 import uuid
@@ -16,7 +19,7 @@ from app.services.user_service import (
     get_user_by_email,
     create_invite,
     refresh_invite_token,
-    list_all_users,
+    list_org_users,
     update_user_by_id,
 )
 from app.services.email_service import send_invite_email
@@ -33,9 +36,14 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 @router.post("/invite", response_model=InviteResponse, status_code=201)
 async def invite_user(body: InviteRequest, admin: dict = Depends(require_admin)):
     """
-    Admin-only. Creates a pending user and sends an invite email.
-    If the user already exists as pending, regenerates the token and resends.
+    Admin-only. Creates a pending user in the same org as the admin and sends
+    an invite email. If the user already exists as pending, regenerates the
+    token and resends.
     """
+    org_id: str | None = admin.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Your account is not linked to an organization.")
+
     if body.role not in ("clinician", "admin"):
         raise HTTPException(status_code=422, detail="Role must be 'clinician' or 'admin'.")
 
@@ -62,6 +70,7 @@ async def invite_user(body: InviteRequest, admin: dict = Depends(require_admin))
         email=body.email,
         role=body.role,
         invited_by_id=admin["sub"],
+        organization_id=org_id,          # ← pass caller's org
     )
     send_invite_email(body.email.lower(), invite_link, admin.get("name", "Admin"))
 
@@ -74,13 +83,16 @@ async def invite_user(body: InviteRequest, admin: dict = Depends(require_admin))
 
 
 # ---------------------------------------------------------------------------
-# GET /admin/users  — List all users
+# GET /admin/users  — List users in caller's org only
 # ---------------------------------------------------------------------------
 
 @router.get("/users")
 async def get_users(admin: dict = Depends(require_admin)):
-    """List all users ordered by creation date."""
-    users = list_all_users()
+    """List all users in the caller's organization."""
+    org_id: str | None = admin.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Your account is not linked to an organization.")
+    users = list_org_users(org_id)
     return {"users": users}
 
 
@@ -117,7 +129,7 @@ async def patch_user(
 
 
 # ===========================================================================
-# DOCUMENT ENDPOINTS (Phase 2)
+# DOCUMENT ENDPOINTS (Phase 2) — all scoped to admin's org
 # ===========================================================================
 
 # Allowed MIME types — checked on the server, not just the extension
@@ -141,10 +153,14 @@ async def upload_document(
     Admin-only. Accepts a PDF or DOCX multipart upload.
     - Validates MIME type server-side.
     - Saves the raw file to Supabase Storage.
-    - Creates a document record in Supabase (status=processing).
+    - Creates a document record scoped to admin's org.
     - Kicks off ingestion in a background thread.
     - Returns the document_id immediately for frontend polling.
     """
+    org_id: str | None = admin.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Your account is not linked to an organization.")
+
     if not title or not title.strip():
         raise HTTPException(status_code=422, detail="Title is required.")
 
@@ -171,13 +187,14 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File storage failed: {e}")
 
-    # Create document record with status='processing'
+    # Create document record scoped to org
     insert_result = db.table("documents").insert({
         "id": document_id,
         "title": title.strip(),
         "file_type": file_type,
         "file_url": file_url,
         "uploaded_by": admin["sub"],
+        "organization_id": org_id,       # ← tenant scope
         "status": "processing",
         "ocr_used": False,
         "freshness_status": "fresh",
@@ -189,7 +206,7 @@ async def upload_document(
     # Run ingestion in a background thread so we can return immediately
     thread = threading.Thread(
         target=process_document,
-        args=(document_id, file_bytes, file_type, title.strip()),
+        args=(document_id, file_bytes, file_type, title.strip(), org_id),
         daemon=True,
     )
     thread.start()
@@ -210,19 +227,20 @@ async def get_document_status(
     document_id: str,
     admin: dict = Depends(require_admin),
 ):
-    """Returns the current processing status of a document."""
+    """Returns the current processing status of a document (org-scoped)."""
+    org_id = admin.get("org_id")
     db = get_supabase()
     result = (
         db.table("documents")
         .select("id, status, ocr_used")
         .eq("id", document_id)
+        .eq("organization_id", org_id)   # ← tenant scope
         .execute()
     )
     if not result.data:
         raise HTTPException(status_code=404, detail="Document not found.")
 
     doc = result.data[0]
-    # Count chunks
     chunk_count_result = (
         db.table("document_chunks")
         .select("id", count="exact")
@@ -240,22 +258,24 @@ async def get_document_status(
 
 
 # ---------------------------------------------------------------------------
-# GET /admin/documents  — List all documents
+# GET /admin/documents  — List documents in caller's org
 # ---------------------------------------------------------------------------
 
 @router.get("/documents")
 async def list_documents(admin: dict = Depends(require_admin)):
-    """Returns all documents with chunk count."""
+    """Returns all documents for the caller's organization."""
+    org_id = admin.get("org_id")
     db = get_supabase()
     result = (
         db.table("documents")
         .select("id, title, file_type, status, ocr_used, freshness_status, created_at, last_ingested_at")
+        .eq("organization_id", org_id)   # ← tenant scope
         .order("created_at", desc=True)
         .execute()
     )
 
     documents = []
-    for doc in result.data:
+    for doc in result.data or []:
         chunk_count_result = (
             db.table("document_chunks")
             .select("id", count="exact")

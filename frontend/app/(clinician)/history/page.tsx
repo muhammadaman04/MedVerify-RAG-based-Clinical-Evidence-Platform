@@ -165,20 +165,28 @@ export default function HistoryPage() {
                           )}
                         </div>
                         
-                        {item.citations && item.citations.length > 0 && (
-                          <div className="mt-4">
-                            <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Sources Cited</h4>
-                            <div className="flex flex-wrap gap-2">
-                              {item.citations.map((cit, idx) => (
-                                <div key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white border border-slate-200 text-xs text-slate-600 shadow-sm">
-                                  <FileText className="w-3 h-3 text-blue-500" />
-                                  {cit.document_title}
-                                  {cit.page_number && <span className="text-slate-400">— p.{cit.page_number}</span>}
-                                </div>
-                              ))}
+                        {item.citations && (() => {
+                          // Defensively parse — old DB rows may have citations as a JSON string
+                          const cits: Citation[] = Array.isArray(item.citations)
+                            ? item.citations
+                            : typeof item.citations === "string"
+                            ? JSON.parse(item.citations || "[]")
+                            : [];
+                          return cits.length > 0 ? (
+                            <div className="mt-4">
+                              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Sources Cited</h4>
+                              <div className="flex flex-wrap gap-2">
+                                {cits.map((cit, idx) => (
+                                  <div key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white border border-slate-200 text-xs text-slate-600 shadow-sm">
+                                    <FileText className="w-3 h-3 text-blue-500" />
+                                    {cit.document_title}
+                                    {cit.page_number && <span className="text-slate-400">— p.{cit.page_number}</span>}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          ) : null;
+                        })()}
                       </div>
                     )}
                   </div>

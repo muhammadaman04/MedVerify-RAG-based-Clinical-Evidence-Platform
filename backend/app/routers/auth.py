@@ -34,6 +34,7 @@ def _issue_tokens(user: dict, response: Response) -> AuthResponse:
         "email": user["email"],
         "role": user["role"],
         "name": user["name"],
+        "org_id": user.get("organization_id"),   # ← tenant scope
     })
     refresh_token = create_access_token(
         {"sub": user["id"], "type": "refresh"},
@@ -54,6 +55,7 @@ def _issue_tokens(user: dict, response: Response) -> AuthResponse:
             "email": user["email"],
             "name": user["name"],
             "role": user["role"],
+            "organization_id": user.get("organization_id"),
         },
     )
 

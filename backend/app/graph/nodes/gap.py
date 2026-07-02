@@ -61,6 +61,7 @@ def gap_logger_node(state: MedVerifyState) -> dict:
 
     db = get_supabase()
     query = state["query"]
+    org_id = state.get("org_id")
     specialty = _detect_specialty(query)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -69,6 +70,7 @@ def gap_logger_node(state: MedVerifyState) -> dict:
             db.table("knowledge_gaps")
             .select("id, asked_count")
             .ilike("query_text", f"%{query[:60]}%")
+            .eq("organization_id", org_id)       # ← org-scoped
             .limit(1)
             .execute()
         )
@@ -88,6 +90,7 @@ def gap_logger_node(state: MedVerifyState) -> dict:
                 "asked_count": 1,
                 "last_asked_at": now,
                 "first_asked_at": now,
+                "organization_id": org_id,       # ← org-scoped
             }).execute()
             print(f"[GapLogger] New gap: {specialty}")
 

@@ -105,6 +105,7 @@ def review_queue_node(state: MedVerifyState) -> dict:
             "confidence_score": score,
             "reason": "low_confidence",
             "status": "pending",
+            "organization_id": state.get("org_id"),   # ← tenant scope
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
         print("[ReviewQueue] Saved to review_queue.")

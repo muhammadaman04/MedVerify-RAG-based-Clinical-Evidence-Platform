@@ -8,7 +8,7 @@ from app.services.user_service import (
     create_invite,
     refresh_invite_token,
     activate_user,
-    list_all_users,
+    list_org_users,
     update_user_by_id,
 )
 
@@ -17,5 +17,5 @@ __all__ = [
     "get_user_by_email", "create_admin_user", "touch_last_active",
     "get_user_by_invite_token", "validate_invite_token",
     "create_invite", "refresh_invite_token", "activate_user",
-    "list_all_users", "update_user_by_id",
+    "list_org_users", "update_user_by_id",
 ]

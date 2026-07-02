@@ -1,6 +1,12 @@
 """
 User service — all user-related database operations and business logic.
 No FastAPI imports. Pure Python functions that can be unit-tested independently.
+
+Multitenancy model:
+  - Every admin self-signup creates a new Organization.
+  - The admin's organization_id is stored on their user row.
+  - Clinicians invited by that admin inherit the same organization_id.
+  - All queries are scoped to organization_id so tenants are fully isolated.
 """
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -15,6 +21,23 @@ settings = get_settings()
 
 
 # ---------------------------------------------------------------------------
+# Organization helpers
+# ---------------------------------------------------------------------------
+
+def create_organization(name: str) -> dict:
+    """Create a new organization row. Returns the created row."""
+    db = get_supabase()
+    result = (
+        db.table("organizations")
+        .insert({"name": name})
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create organization.")
+    return result.data[0]
+
+
+# ---------------------------------------------------------------------------
 # Auth operations
 # ---------------------------------------------------------------------------
 
@@ -23,7 +46,7 @@ def get_user_by_email(email: str) -> dict | None:
     db = get_supabase()
     result = (
         db.table("users")
-        .select("id, email, name, role, status, password_hash, last_active_at")
+        .select("id, email, name, role, status, password_hash, last_active_at, organization_id")
         .eq("email", email.lower())
         .execute()
     )
@@ -31,8 +54,18 @@ def get_user_by_email(email: str) -> dict | None:
 
 
 def create_admin_user(name: str, email: str, password_hash: str) -> dict:
-    """Insert a new admin user row. Returns the created row."""
+    """
+    Insert a new admin user row AND create an organization for them.
+    The organization name defaults to '<name>'s Organization'.
+    Returns the created user row (includes organization_id).
+    """
     db = get_supabase()
+
+    # 1. Create the organization first
+    org = create_organization(f"{name}'s Organization")
+    org_id = org["id"]
+
+    # 2. Create the user linked to that org
     result = (
         db.table("users")
         .insert({
@@ -42,6 +75,7 @@ def create_admin_user(name: str, email: str, password_hash: str) -> dict:
             "status": "active",
             "password_hash": password_hash,
             "invited_by": None,
+            "organization_id": org_id,
         })
         .execute()
     )
@@ -67,7 +101,7 @@ def get_user_by_invite_token(token: str) -> dict | None:
     db = get_supabase()
     result = (
         db.table("users")
-        .select("id, email, name, status, invite_token, invite_expires_at")
+        .select("id, email, name, status, invite_token, invite_expires_at, organization_id")
         .eq("invite_token", token.strip())
         .execute()
     )
@@ -99,9 +133,10 @@ def validate_invite_token(token: str) -> dict:
     return user
 
 
-def create_invite(email: str, role: str, invited_by_id: str) -> tuple[dict, str]:
+def create_invite(email: str, role: str, invited_by_id: str, organization_id: str) -> tuple[dict, str]:
     """
-    Insert a pending user with a fresh invite token.
+    Insert a pending user with a fresh invite token, scoped to the same org
+    as the inviting admin.
     Returns (user_row, invite_link).
     """
     db = get_supabase()
@@ -119,6 +154,7 @@ def create_invite(email: str, role: str, invited_by_id: str) -> tuple[dict, str]
             "invite_token": invite_token,
             "invite_expires_at": invite_expires_at.isoformat(),
             "password_hash": None,
+            "organization_id": organization_id,   # ← inherit admin's org
         })
         .execute()
     )
@@ -160,19 +196,20 @@ def activate_user(user_id: str, password_hash: str, name: str | None = None) -> 
 
 
 # ---------------------------------------------------------------------------
-# Admin user management
+# Admin user management — all scoped to the caller's organization
 # ---------------------------------------------------------------------------
 
-def list_all_users() -> list[dict]:
-    """Return all users ordered by creation date."""
+def list_org_users(organization_id: str) -> list[dict]:
+    """Return all users in a specific organization, ordered by creation date."""
     db = get_supabase()
     result = (
         db.table("users")
         .select("id, email, name, role, status, created_at, last_active_at")
+        .eq("organization_id", organization_id)
         .order("created_at", desc=True)
         .execute()
     )
-    return result.data
+    return result.data or []
 
 
 def update_user_by_id(user_id: str, updates: dict) -> dict:

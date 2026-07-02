@@ -63,11 +63,16 @@ async def run_query(
     if len(query_text) > 2000:
         raise HTTPException(status_code=422, detail="Query must be 2000 characters or fewer.")
 
+    org_id: str | None = user.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Your account is not linked to an organization.")
+
     # --- Run the LangGraph pipeline ---
     from app.graph import medverify_graph, MedVerifyState
 
     initial_state: MedVerifyState = {
         "query": query_text,
+        "org_id": org_id,              # ← tenant scope flows through the entire graph
         "retrieved_chunks": [],
         "reranked_chunks": [],
         "confidence_score": 0.0,
@@ -88,11 +93,12 @@ async def run_query(
     db = get_supabase()
     log_row = {
         "user_id": user["sub"],
+        "organization_id": org_id,     # ← tenant scope
         "query_text": query_text,
         "answer_text": final_state.get("answer"),
         "confidence_score": final_state.get("confidence_score", 0.0),
         "route": final_state.get("route", "gap"),
-        "citations": json.dumps(final_state.get("citations", [])),
+        "citations": final_state.get("citations", []),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -106,12 +112,12 @@ async def run_query(
     # --- If review route, backfill query_id into review_queue ---
     if final_state.get("route") == "review" and query_id != "unknown":
         try:
-            # Find the most recent pending review_queue entry for this query_text
             rq = (
                 db.table("review_queue")
                 .select("id")
                 .eq("query_text", query_text)
                 .eq("status", "pending")
+                .eq("organization_id", org_id)
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()

@@ -40,9 +40,10 @@ def retrieval_node(state: MedVerifyState) -> dict:
     from app.services.retrieval_service import hybrid_retrieve
 
     query = state["query"]
-    print(f"\n[Retrieval] Query: {query[:80]}…")
+    org_id = state["org_id"]
+    print(f"\n[Retrieval] Query: {query[:80]}… (org={org_id[:8]})")
 
-    chunks = hybrid_retrieve(query, top_k=20)
+    chunks = hybrid_retrieve(query, org_id=org_id, top_k=20)
     print(f"[Retrieval] Retrieved {len(chunks)} chunks.")
 
     return {"retrieved_chunks": [_chunk_to_dict(c) for c in chunks]}

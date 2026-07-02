@@ -33,6 +33,7 @@ class MedVerifyState(TypedDict):
     review_required     True when the query is routed to the human review queue.
     """
     query: str
+    org_id: str                   # The organization this query belongs to
     retrieved_chunks: list
     reranked_chunks: list
     confidence_score: float
